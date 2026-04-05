@@ -43,7 +43,7 @@ def verify_signature(body: bytes, signature: str) -> bool:
 # ──────────────────────────────────────────────────────────────
 
 async def reply_message(reply_token: str, messages: list):
-    """ส่งข้อความตอบกลับ"""
+    """ส่งข้อความตอบกลับ (ใช้ได้ครั้งเดียวต่อ token)"""
     async with httpx.AsyncClient() as client:
         await client.post(
             f"{LINE_API_BASE}/message/reply",
@@ -55,9 +55,27 @@ async def reply_message(reply_token: str, messages: list):
         )
 
 
+async def push_message(user_id: str, messages: list):
+    """ส่งข้อความแบบ push (ใช้ userId ไม่ใช้ token — ใช้ได้หลายครั้ง)"""
+    async with httpx.AsyncClient() as client:
+        await client.post(
+            f"{LINE_API_BASE}/message/push",
+            headers={
+                "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
+                "Content-Type": "application/json",
+            },
+            json={"to": user_id, "messages": messages},
+        )
+
+
 async def reply_text(reply_token: str, text: str):
     """ส่งข้อความตัวอักษรตอบกลับ"""
     await reply_message(reply_token, [{"type": "text", "text": text}])
+
+
+async def push_text(user_id: str, text: str):
+    """ส่งข้อความแบบ push ด้วย userId"""
+    await push_message(user_id, [{"type": "text", "text": text}])
 
 
 async def get_image_content(message_id: str) -> bytes:
@@ -166,6 +184,7 @@ def get_recent_expenses(n: int = 5) -> list:
 async def handle_image(event: dict):
     """จัดการรูปภาพ (สลิป)"""
     reply_token = event.get("replyToken", "")
+    user_id = event.get("source", {}).get("userId", "")
     message_id = event["message"]["id"]
 
     # ดาวน์โหลดรูป
@@ -175,14 +194,15 @@ async def handle_image(event: dict):
         await reply_text(reply_token, f"❌ ไม่สามารถดาวน์โหลดรูปได้: {str(e)}")
         return
 
-    # อ่านสลิปด้วย Claude Vision
+    # ส่ง "กำลังอ่าน" ครั้งเดียว (ใช้ reply_token หมดแล้ว)
     await reply_text(reply_token, "🔍 กำลังอ่านสลิป รอสักครู่...")
 
+    # อ่านสลิปด้วย Claude Vision (หลังจากนี้ใช้ push_text แทน)
     slip_data = parse_slip_image(image_bytes)
 
     if not slip_data.success:
-        await reply_text(
-            reply_token,
+        await push_text(
+            user_id,
             f"❌ ไม่สามารถอ่านสลิปได้\nสาเหตุ: {slip_data.error}\n\n"
             f"💡 ลองส่งสลิปอีกครั้ง หรือบันทึกด้วยตนเองผ่าน Web App",
         )
@@ -191,7 +211,7 @@ async def handle_image(event: dict):
     # บันทึกค่าใช้จ่าย
     saved = save_expense_from_slip(slip_data)
 
-    # สร้างข้อความยืนยัน
+    # สร้างข้อความยืนยัน และส่งด้วย push (ใช้ userId)
     lines = [f"✅ บันทึกค่าใช้จ่ายเรียบร้อยแล้ว!", f""]
     lines.append(f"💰 จำนวน: {slip_data.amount:,.2f} บาท")
     lines.append(f"📅 วันที่: {slip_data.expense_date}")
@@ -205,7 +225,7 @@ async def handle_image(event: dict):
     lines.append(f"📋 รหัสรายการ: #{saved['id']}")
     lines.append(f"💡 พิมพ์ 'ยอดวันนี้' เพื่อดูสรุป")
 
-    await reply_text(reply_token, "\n".join(lines))
+    await push_text(user_id, "\n".join(lines))
 
 
 async def handle_text(event: dict):
