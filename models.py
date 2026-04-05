@@ -6,21 +6,25 @@ from typing import Optional
 from datetime import date
 
 
-CATEGORIES = [
-    "อาหาร",
-    "เดินทาง",
-    "ช้อปปิ้ง",
-    "ท่องเที่ยว",
-    "ความบันเทิง",
-    "สุขภาพ",
-    "ค่าธรรมเนียม",
-    "เงินเดือน",
-    "รายได้อื่นๆ",
+INCOME_CATEGORIES = ["เงินเดือน", "รายได้อื่นๆ"]
+
+EXPENSE_CATEGORIES = [
+    "ค่าอาหาร",
+    "ค่าเสื้อผ้า",
+    "ค่าเครื่องสำอาง",
+    "ค่าของใช้ในบ้าน",
+    "เงินลงทุน",
+    "ค่าดูแลพ่อแม่",
+    "ค่าโทรศัพท์",
+    "ค่าน้ำมัน",
+    "ค่างานบ้าน",
+    "ค่าสันทนาการ",
+    "ค่าความรู้",
+    "ลูกชาย",
     "อื่นๆ",
 ]
 
-INCOME_CATEGORIES = ["เงินเดือน", "รายได้อื่นๆ"]
-EXPENSE_CATEGORIES = [c for c in CATEGORIES if c not in INCOME_CATEGORIES]
+CATEGORIES = INCOME_CATEGORIES + EXPENSE_CATEGORIES
 
 
 class ExpenseCreate(BaseModel):
