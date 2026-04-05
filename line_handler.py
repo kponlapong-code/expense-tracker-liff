@@ -22,6 +22,9 @@ LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
 LINE_API_BASE = "https://api.line.me/v2/bot"
 LINE_CONTENT_BASE = "https://api-data.line.me/v2/bot"
 
+# เก็บข้อความล่าสุดที่ user พิมพ์ก่อนส่งสลิป (user_id → note)
+_user_notes: dict = {}
+
 
 # ──────────────────────────────────────────────────────────────
 # Signature Verification
@@ -100,17 +103,21 @@ def save_expense_from_slip(slip_data) -> dict:
     try:
         now = datetime.now().isoformat()
         expense_date = slip_data.expense_date or date.today().isoformat()
+        category = slip_data.suggested_category or "อื่นๆ"
+        slip_type = slip_data.suggested_type or "expense"
+        desc = slip_data.note or "บันทึกจากสลิป LINE"
         cur = conn.execute(
             """
             INSERT INTO expenses
-                (amount, category, description, recipient, sender, bank, reference,
+                (type, amount, category, description, recipient, sender, bank, reference,
                  source, expense_date, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                slip_type,
                 slip_data.amount,
-                "อื่นๆ",
-                f"บันทึกจากสลิป LINE",
+                category,
+                desc,
                 slip_data.recipient,
                 slip_data.sender,
                 slip_data.bank,
@@ -121,7 +128,8 @@ def save_expense_from_slip(slip_data) -> dict:
             ),
         )
         conn.commit()
-        return {"id": cur.lastrowid, "expense_date": expense_date}
+        return {"id": cur.lastrowid, "expense_date": expense_date,
+                "category": category, "type": slip_type}
     finally:
         conn.close()
 
@@ -187,6 +195,9 @@ async def handle_image(event: dict):
     user_id = event.get("source", {}).get("userId", "")
     message_id = event["message"]["id"]
 
+    # ดึง note ที่ user พิมพ์ก่อนส่งสลิป (ถ้ามี) แล้วลบทิ้ง
+    user_note = _user_notes.pop(user_id, "")
+
     # ดาวน์โหลดรูป
     try:
         image_bytes = await get_image_content(message_id)
@@ -195,10 +206,11 @@ async def handle_image(event: dict):
         return
 
     # ส่ง "กำลังอ่าน" ครั้งเดียว (ใช้ reply_token หมดแล้ว)
-    await reply_text(reply_token, "🔍 กำลังอ่านสลิป รอสักครู่...")
+    hint = f" (หมวด: {user_note})" if user_note else ""
+    await reply_text(reply_token, f"🔍 กำลังอ่านสลิป{hint} รอสักครู่...")
 
-    # อ่านสลิปด้วย Claude Vision (หลังจากนี้ใช้ push_text แทน)
-    slip_data = parse_slip_image(image_bytes)
+    # อ่านสลิปด้วย Claude Vision พร้อมส่ง user_note ช่วยจัดหมวด
+    slip_data = parse_slip_image(image_bytes, user_note=user_note)
 
     if not slip_data.success:
         await push_text(
@@ -208,22 +220,28 @@ async def handle_image(event: dict):
         )
         return
 
-    # บันทึกค่าใช้จ่าย
+    # บันทึก (พร้อม category และ type จากการวิเคราะห์)
     saved = save_expense_from_slip(slip_data)
 
-    # สร้างข้อความยืนยัน และส่งด้วย push (ใช้ userId)
-    lines = [f"✅ บันทึกค่าใช้จ่ายเรียบร้อยแล้ว!", f""]
+    # ไอคอนตามประเภท
+    type_icon = "💚 รายรับ" if saved["type"] == "income" else "❤️ รายจ่าย"
+
+    # สร้างข้อความยืนยัน
+    lines = [f"✅ บันทึกเรียบร้อยแล้ว! ({type_icon})", ""]
     lines.append(f"💰 จำนวน: {slip_data.amount:,.2f} บาท")
+    lines.append(f"🏷️ หมวดหมู่: {saved['category']}")
     lines.append(f"📅 วันที่: {slip_data.expense_date}")
+    if slip_data.note:
+        lines.append(f"📝 หมายเหตุ: {slip_data.note}")
     if slip_data.recipient:
         lines.append(f"👤 ผู้รับ: {slip_data.recipient}")
     if slip_data.bank:
         lines.append(f"🏦 ธนาคาร: {slip_data.bank}")
     if slip_data.reference:
         lines.append(f"🔖 อ้างอิง: {slip_data.reference}")
-    lines.append(f"")
-    lines.append(f"📋 รหัสรายการ: #{saved['id']}")
-    lines.append(f"💡 พิมพ์ 'ยอดวันนี้' เพื่อดูสรุป")
+    lines.append("")
+    lines.append(f"📋 รหัส: #{saved['id']}")
+    lines.append("💡 พิมพ์ 'ยอดวันนี้' เพื่อดูสรุป")
 
     await push_text(user_id, "\n".join(lines))
 
@@ -282,10 +300,15 @@ async def handle_text(event: dict):
         await reply_text(reply_token, msg)
 
     else:
+        # เก็บข้อความเป็น note hint สำหรับสลิปถัดไป
+        user_id = event.get("source", {}).get("userId", "")
+        original_text = event["message"]["text"].strip()
+        if user_id:
+            _user_notes[user_id] = original_text
         await reply_text(
             reply_token,
-            "💡 ส่งรูปสลิปเพื่อบันทึกค่าใช้จ่ายอัตโนมัติ\n"
-            "หรือพิมพ์ 'help' เพื่อดูคำสั่งทั้งหมด",
+            f"📝 รับทราบ! '{original_text}'\n"
+            "ส่งรูปสลิปมาเลย จะจัดหมวดหมู่ให้อัตโนมัติ 🎯",
         )
 
 

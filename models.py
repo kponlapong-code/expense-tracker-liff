@@ -67,6 +67,9 @@ class SlipData(BaseModel):
     sender: Optional[str] = None
     bank: Optional[str] = None
     reference: Optional[str] = None
+    note: Optional[str] = None              # หมายเหตุในสลิป
+    suggested_category: Optional[str] = None  # หมวดหมู่ที่แนะนำจาก note
+    suggested_type: str = "expense"         # income หรือ expense
     raw_text: Optional[str] = None
     success: bool = False
     error: Optional[str] = None
