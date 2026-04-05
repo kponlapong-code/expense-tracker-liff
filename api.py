@@ -237,6 +237,94 @@ def summary_daily(month: Optional[str] = Query(default=None)):
         conn.close()
 
 
+@router.get("/summary/year")
+def summary_year(year: Optional[str] = Query(default=None, description="YYYY")):
+    """ยอดรวมรายเดือน + รายหมวดหมู่ ในปีที่เลือก"""
+    if not year:
+        year = datetime.now().strftime("%Y")
+
+    conn = get_connection()
+    try:
+        # รายเดือน (12 เดือน)
+        monthly_rows = conn.execute(
+            """
+            SELECT strftime('%Y-%m', expense_date) AS month,
+                   COALESCE(SUM(CASE WHEN type='income'  THEN amount ELSE 0 END), 0) AS income,
+                   COALESCE(SUM(CASE WHEN type='expense' THEN amount ELSE 0 END), 0) AS expense,
+                   COUNT(*) AS count
+            FROM expenses
+            WHERE strftime('%Y', expense_date) = ?
+            GROUP BY month
+            ORDER BY month ASC
+            """,
+            (year,),
+        ).fetchall()
+
+        # รายหมวดหมู่ (เฉพาะรายจ่าย)
+        cat_rows = conn.execute(
+            """
+            SELECT category,
+                   COALESCE(SUM(amount), 0) AS total,
+                   COUNT(*) AS count
+            FROM expenses
+            WHERE strftime('%Y', expense_date) = ? AND type = 'expense'
+            GROUP BY category
+            ORDER BY total DESC
+            """,
+            (year,),
+        ).fetchall()
+
+        # ยอดรวมทั้งปี
+        totals = conn.execute(
+            """
+            SELECT COALESCE(SUM(CASE WHEN type='income'  THEN amount ELSE 0 END), 0) AS income,
+                   COALESCE(SUM(CASE WHEN type='expense' THEN amount ELSE 0 END), 0) AS expense,
+                   COUNT(*) AS count
+            FROM expenses
+            WHERE strftime('%Y', expense_date) = ?
+            """,
+            (year,),
+        ).fetchone()
+
+        return {
+            "year": year,
+            "income":   totals["income"],
+            "expense":  totals["expense"],
+            "balance":  totals["income"] - totals["expense"],
+            "count":    totals["count"],
+            "monthly":  [dict_from_row(r) for r in monthly_rows],
+            "by_category": [dict_from_row(r) for r in cat_rows],
+        }
+    finally:
+        conn.close()
+
+
+@router.get("/summary/category")
+def summary_category(month: Optional[str] = Query(default=None, description="YYYY-MM")):
+    """ยอดรวมรายหมวดหมู่ในเดือน"""
+    if not month:
+        month = datetime.now().strftime("%Y-%m")
+
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT category,
+                   COALESCE(SUM(CASE WHEN type='expense' THEN amount ELSE 0 END), 0) AS expense,
+                   COALESCE(SUM(CASE WHEN type='income'  THEN amount ELSE 0 END), 0) AS income,
+                   COUNT(*) AS count
+            FROM expenses
+            WHERE strftime('%Y-%m', expense_date) = ?
+            GROUP BY category
+            ORDER BY expense DESC
+            """,
+            (month,),
+        ).fetchall()
+        return {"month": month, "by_category": [dict_from_row(r) for r in rows]}
+    finally:
+        conn.close()
+
+
 @router.get("/categories")
 def list_categories():
     """ดูหมวดหมู่ทั้งหมด"""
