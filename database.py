@@ -23,6 +23,7 @@ def init_db():
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS expenses (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                type        TEXT    NOT NULL DEFAULT 'expense',
                 amount      REAL    NOT NULL,
                 category    TEXT    NOT NULL DEFAULT 'อื่นๆ',
                 description TEXT,
@@ -37,8 +38,16 @@ def init_db():
 
             CREATE INDEX IF NOT EXISTS idx_expense_date ON expenses(expense_date);
             CREATE INDEX IF NOT EXISTS idx_category ON expenses(category);
+            CREATE INDEX IF NOT EXISTS idx_type ON expenses(type);
         """)
         conn.commit()
+
+        # Migration: เพิ่มคอลัมน์ type ถ้ายังไม่มี (สำหรับ DB เดิม)
+        cols = [row[1] for row in conn.execute("PRAGMA table_info(expenses)").fetchall()]
+        if "type" not in cols:
+            conn.execute("ALTER TABLE expenses ADD COLUMN type TEXT NOT NULL DEFAULT 'expense'")
+            conn.commit()
+
     finally:
         conn.close()
 

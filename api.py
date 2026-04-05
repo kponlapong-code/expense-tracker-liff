@@ -1,5 +1,5 @@
 """
-api.py - REST API routes สำหรับจัดการค่าใช้จ่าย
+api.py - REST API routes สำหรับจัดการรายรับ/รายจ่าย
 """
 from fastapi import APIRouter, HTTPException, Query
 from typing import Optional, List
@@ -20,10 +20,11 @@ router = APIRouter(prefix="/api", tags=["expenses"])
 def list_expenses(
     month: Optional[str] = Query(default=None, description="YYYY-MM"),
     category: Optional[str] = Query(default=None),
+    type: Optional[str] = Query(default=None, description="income หรือ expense"),
     limit: int = Query(default=50, le=200),
     offset: int = Query(default=0),
 ):
-    """ดูรายการค่าใช้จ่าย"""
+    """ดูรายการรายรับ/รายจ่าย"""
     conn = get_connection()
     try:
         params = []
@@ -36,6 +37,10 @@ def list_expenses(
         if category:
             where_clauses.append("category = ?")
             params.append(category)
+
+        if type:
+            where_clauses.append("type = ?")
+            params.append(type)
 
         where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
         sql = f"""
@@ -53,18 +58,19 @@ def list_expenses(
 
 @router.post("/expenses", response_model=dict, status_code=201)
 def create_expense(expense: ExpenseCreate):
-    """เพิ่มค่าใช้จ่ายใหม่"""
+    """เพิ่มรายรับ/รายจ่ายใหม่"""
     conn = get_connection()
     try:
         now = datetime.now().isoformat()
         cur = conn.execute(
             """
             INSERT INTO expenses
-                (amount, category, description, recipient, sender, bank, reference,
+                (type, amount, category, description, recipient, sender, bank, reference,
                  source, expense_date, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                expense.type,
                 expense.amount,
                 expense.category,
                 expense.description,
@@ -86,7 +92,7 @@ def create_expense(expense: ExpenseCreate):
 
 @router.get("/expenses/{expense_id}", response_model=dict)
 def get_expense(expense_id: int):
-    """ดูค่าใช้จ่ายรายการเดียว"""
+    """ดูรายการเดียว"""
     conn = get_connection()
     try:
         row = conn.execute("SELECT * FROM expenses WHERE id = ?", (expense_id,)).fetchone()
@@ -99,7 +105,7 @@ def get_expense(expense_id: int):
 
 @router.put("/expenses/{expense_id}", response_model=dict)
 def update_expense(expense_id: int, update: ExpenseUpdate):
-    """แก้ไขค่าใช้จ่าย"""
+    """แก้ไขรายการ"""
     conn = get_connection()
     try:
         row = conn.execute("SELECT * FROM expenses WHERE id = ?", (expense_id,)).fetchone()
@@ -123,7 +129,7 @@ def update_expense(expense_id: int, update: ExpenseUpdate):
 
 @router.delete("/expenses/{expense_id}")
 def delete_expense(expense_id: int):
-    """ลบค่าใช้จ่าย"""
+    """ลบรายการ"""
     conn = get_connection()
     try:
         row = conn.execute("SELECT id FROM expenses WHERE id = ?", (expense_id,)).fetchone()
@@ -140,49 +146,65 @@ def delete_expense(expense_id: int):
 # Summary / Reports
 # ──────────────────────────────────────────────────────────────
 
+def _get_type_totals(conn, where_sql: str, params: list) -> dict:
+    """คำนวณรายรับ รายจ่าย และยอดคงเหลือ"""
+    row = conn.execute(
+        f"""
+        SELECT
+            COALESCE(SUM(CASE WHEN type='income' THEN amount ELSE 0 END), 0) AS income,
+            COALESCE(SUM(CASE WHEN type='expense' THEN amount ELSE 0 END), 0) AS expense,
+            COUNT(*) AS count
+        FROM expenses {where_sql}
+        """,
+        params,
+    ).fetchone()
+    return {
+        "income": row["income"],
+        "expense": row["expense"],
+        "balance": row["income"] - row["expense"],
+        "count": row["count"],
+    }
+
+
 @router.get("/summary/today")
 def summary_today():
     """ยอดรวมวันนี้"""
     today = date.today().isoformat()
     conn = get_connection()
     try:
-        row = conn.execute(
-            "SELECT COALESCE(SUM(amount), 0) as total, COUNT(*) as count FROM expenses WHERE expense_date = ?",
-            (today,),
-        ).fetchone()
-        return {"date": today, "total": row["total"], "count": row["count"]}
+        totals = _get_type_totals(conn, "WHERE expense_date = ?", [today])
+        return {"date": today, **totals}
     finally:
         conn.close()
 
 
 @router.get("/summary/month")
 def summary_month(month: Optional[str] = Query(default=None, description="YYYY-MM")):
-    """ยอดรวมรายเดือน พร้อมแบ่งตามหมวดหมู่"""
+    """ยอดรวมรายเดือน แบ่งตามหมวดหมู่"""
     if not month:
         month = datetime.now().strftime("%Y-%m")
 
     conn = get_connection()
     try:
-        total_row = conn.execute(
-            "SELECT COALESCE(SUM(amount), 0) as total, COUNT(*) as count FROM expenses WHERE strftime('%Y-%m', expense_date) = ?",
-            (month,),
-        ).fetchone()
+        totals = _get_type_totals(
+            conn, "WHERE strftime('%Y-%m', expense_date) = ?", [month]
+        )
 
         cat_rows = conn.execute(
             """
-            SELECT category, COALESCE(SUM(amount), 0) as total, COUNT(*) as count
+            SELECT type, category,
+                   COALESCE(SUM(amount), 0) as total, COUNT(*) as count
             FROM expenses
             WHERE strftime('%Y-%m', expense_date) = ?
-            GROUP BY category
-            ORDER BY total DESC
+            GROUP BY type, category
+            ORDER BY type, total DESC
             """,
             (month,),
         ).fetchall()
 
         return {
             "month": month,
-            "total": total_row["total"],
-            "count": total_row["count"],
+            **totals,
             "by_category": [dict_from_row(r) for r in cat_rows],
         }
     finally:
@@ -199,7 +221,10 @@ def summary_daily(month: Optional[str] = Query(default=None)):
     try:
         rows = conn.execute(
             """
-            SELECT expense_date, COALESCE(SUM(amount), 0) as total, COUNT(*) as count
+            SELECT expense_date,
+                   COALESCE(SUM(CASE WHEN type='income' THEN amount ELSE 0 END), 0) AS income,
+                   COALESCE(SUM(CASE WHEN type='expense' THEN amount ELSE 0 END), 0) AS expense,
+                   COUNT(*) as count
             FROM expenses
             WHERE strftime('%Y-%m', expense_date) = ?
             GROUP BY expense_date

@@ -14,11 +14,17 @@ CATEGORIES = [
     "ความบันเทิง",
     "สุขภาพ",
     "ค่าธรรมเนียม",
+    "เงินเดือน",
+    "รายได้อื่นๆ",
     "อื่นๆ",
 ]
 
+INCOME_CATEGORIES = ["เงินเดือน", "รายได้อื่นๆ"]
+EXPENSE_CATEGORIES = [c for c in CATEGORIES if c not in INCOME_CATEGORIES]
+
 
 class ExpenseCreate(BaseModel):
+    type: str = Field(default="expense", description="income หรือ expense")
     amount: float = Field(..., gt=0, description="จำนวนเงิน (บาท)")
     category: str = Field(default="อื่นๆ", description="หมวดหมู่")
     description: Optional[str] = Field(default=None, description="รายละเอียด")
@@ -31,6 +37,7 @@ class ExpenseCreate(BaseModel):
 
 
 class ExpenseUpdate(BaseModel):
+    type: Optional[str] = None
     amount: Optional[float] = Field(default=None, gt=0)
     category: Optional[str] = None
     description: Optional[str] = None
@@ -39,6 +46,7 @@ class ExpenseUpdate(BaseModel):
 
 class ExpenseOut(BaseModel):
     id: int
+    type: str
     amount: float
     category: str
     description: Optional[str]
