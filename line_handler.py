@@ -7,7 +7,7 @@ import hashlib
 import hmac
 import base64
 from datetime import datetime, date
-from fastapi import APIRouter, Request, HTTPException, Header
+from fastapi import APIRouter, Request, HTTPException, Header, BackgroundTasks
 from fastapi.responses import JSONResponse
 import httpx
 
@@ -319,9 +319,10 @@ async def handle_text(event: dict):
 @router.post("/webhook")
 async def webhook(
     request: Request,
+    background_tasks: BackgroundTasks,
     x_line_signature: str = Header(default=""),
 ):
-    """LINE Webhook endpoint"""
+    """LINE Webhook endpoint — ตอบ LINE ทันที แล้วประมวลผลใน background"""
     body = await request.body()
 
     # Verify signature
@@ -337,8 +338,11 @@ async def webhook(
         if event_type == "message":
             msg_type = message.get("type")
             if msg_type == "image":
-                await handle_image(event)
+                # ใช้ background task เพื่อให้ webhook ตอบ LINE ทันที
+                # (ไม่ timeout แม้ Claude API จะใช้เวลานาน)
+                background_tasks.add_task(handle_image, event)
             elif msg_type == "text":
-                await handle_text(event)
+                background_tasks.add_task(handle_text, event)
 
+    # ตอบ LINE ทันที — background tasks จะทำงานหลังจากนี้
     return JSONResponse(content={"status": "ok"})
